@@ -1,65 +1,37 @@
-use anyhow::{Result, Context};
+// cross-platform backend
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+
+// frontend
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Paragraph},
     Terminal,
 };
-use std::{io, time::{Duration, Instant}};
-use sysinfo::{System};
+
+use std::io::{Error, Stdout};
+use std::{io, process::Command, result::Result};
 
 struct App {
     input: String,
-    processes: Vec<ProcessInfo>,
-    show_processes: bool,
-    last_update: Instant,
-}
-
-struct ProcessInfo {
-    pid: u32,
-    name: String,
-    cpu_usage: f32,
-    memory: u64,
+    output: String,
 }
 
 impl App {
     fn new() -> App {
         App {
             input: String::new(),
-            processes: Vec::new(),
-            show_processes: false,
-            last_update: Instant::now(),
+            output: String::new(),
         }
     }
 
-    fn update_processes(&mut self, sys: &mut System) {
-        if self.last_update.elapsed() >= Duration::from_secs(1) {
-            sys.refresh_all();
-
-            self.processes = sys
-                .processes()
-                .values()
-                .map(|proc| ProcessInfo {
-                    pid: proc.pid().as_u32(),
-                    name: proc.name().to_str().unwrap().to_string(),
-                    cpu_usage: proc.cpu_usage(),
-                    memory: proc.memory(),
-                })
-                .collect();
-
-            self.processes.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
-            self.last_update = Instant::now();
-        }
-    }
-
-    fn handle_input(&mut self, key: KeyCode) {
+    /// Reads input commands and modifies the output accordingly
+    fn read(&mut self, key: KeyCode) {
         match key {
             KeyCode::Char(c) => {
                 self.input.push(c);
@@ -68,93 +40,78 @@ impl App {
                 self.input.pop();
             }
             KeyCode::Enter => {
-                if self.input.trim() == "ps" {
-                    self.show_processes = true;
-                } else if self.input.trim() == "clear" {
-                    self.show_processes = false;
+                let input_command = self.input.trim();
+                let result = Command::new("sh").arg("-c").arg(input_command).output();
+                match result {
+                    Ok(value) => {
+                        if value.status.success() {
+                            self.output = String::from_utf8_lossy(&value.stdout).to_string();
+                        } else {
+                            self.output = String::from_utf8_lossy(&value.stderr).to_string();
+                        }
+                    }
+                    Err(_) => {
+                        self.output = format!("Error: Command '{}' not found", input_command);
+                    }
                 }
                 self.input.clear();
             }
             _ => {}
         }
     }
+
+    /// Renders the front end of the terminal app
+    fn render_ui(&self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
+        terminal
+            .draw(|f| {
+                // layout
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .margin(1)
+                    .constraints([
+                        Constraint::Min(3),    // Process or Command output display area
+                        Constraint::Length(3), // Input area
+                    ])
+                    .split(f.area());
+
+                // output area
+                let command_output = Paragraph::new(self.output.as_str())
+                    .style(Style::default().fg(Color::White))
+                    .block(Block::default().borders(Borders::ALL));
+                f.render_widget(command_output, chunks[0]);
+
+                // input area
+                let input = Paragraph::new(self.input.as_str())
+                    .style(Style::default().fg(Color::Yellow))
+                    .block(Block::default().borders(Borders::ALL));
+                f.render_widget(input, chunks[1]);
+            })
+            .unwrap();
+    }
 }
 
-fn main() -> Result<()> {
-    // Terminal setup
-    enable_raw_mode().context("Failed to enable raw mode")?;
+fn main() -> Result<(), Error> {
+    // setup
+    enable_raw_mode().expect("Failed to enable raw mode");
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    // Create app state
+    let mut terminal = Terminal::new(backend).unwrap();
     let mut app = App::new();
-    let mut sys = System::new_all();
 
-    // Main loop
+    // main loop
     loop {
-        // Update process list if needed and if processes should be shown
-        if app.show_processes {
-            app.update_processes(&mut sys);
-        }
+        // render
+        app.render_ui(&mut terminal);
 
-        // Draw UI
-        terminal.draw(|f| {
-            // Create main layout
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .margin(1)
-                .constraints([
-                    Constraint::Min(3),     // Process display area
-                    Constraint::Length(3),  // Input area
-                ])
-                .split(f.area());
-
-            // Draw process area
-            if app.show_processes {
-                let items: Vec<ListItem> = app
-                    .processes
-                    .iter()
-                    .map(|p| {
-                        ListItem::new(Line::from(vec![
-                            Span::raw(format!("{:<8}", p.pid)),
-                            Span::raw(format!("{:<20}", p.name)),
-                            Span::raw(format!("{:>6.1}%", p.cpu_usage)),
-                            Span::raw(format!("{:>10}KB", p.memory)),
-                        ]))
-                    })
-                    .collect();
-
-                let processes = List::new(items)
-                    .block(Block::default()
-                        .title("Processes (sorted by CPU usage)")
-                        .borders(Borders::ALL))
-                    .style(Style::default().fg(Color::White));
-
-                f.render_widget(processes, chunks[0]);
-            } else {
-                let help = Paragraph::new("Type 'ps' to show processes, 'clear' to hide them")
-                    .block(Block::default().borders(Borders::ALL));
-                f.render_widget(help, chunks[0]);
-            }
-
-            // Draw input area
-            let input = Paragraph::new(app.input.as_str())
-                .style(Style::default().fg(Color::Yellow))
-                .block(Block::default().borders(Borders::ALL).title("Command"));
-            f.render_widget(input, chunks[1]);
-        })?;
-
-        // Handle input
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('c') if key.modifiers == event::KeyModifiers::CONTROL => {
-                        break;
-                    }
-                    code => app.handle_input(code),
+        // react to input keystrokes
+        if let Event::Key(key_event) = event::read()? {
+            match key_event.code {
+                // exit the terminal with ctrl + d
+                KeyCode::Char('c') if key_event.modifiers == event::KeyModifiers::CONTROL => {
+                    break;
                 }
+                key => app.read(key),
             }
         }
     }
