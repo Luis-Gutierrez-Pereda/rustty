@@ -1,3 +1,10 @@
+// std
+use std::io::{Error, Stdout};
+use std::path::{Path, PathBuf};
+use std::{collections::HashSet, env, io, process::Command, process::Stdio, result::Result};
+// dirs
+use dirs::home_dir;
+
 // cross-platform backend
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -14,10 +21,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
-
-use std::io::{Error, Stdout};
-use std::path::PathBuf;
-use std::{collections::HashSet, env, io, process::Command, process::Stdio, result::Result};
 
 struct App {
     input: String,
@@ -36,7 +39,13 @@ impl App {
 
     /// Returns the current directory
     fn current_dir() -> PathBuf {
-        env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
+        let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        if let Some(home) = home_dir() {
+            if current_dir.starts_with(&home) {
+                return Path::new("~").join(current_dir.strip_prefix(&home).unwrap());
+            }
+        }
+        current_dir
     }
 
     /// In charge of running commands that do not involve a full screen
@@ -88,7 +97,12 @@ impl App {
             }
             KeyCode::Enter => {
                 let cmd = self.input.trim().to_string();
-                if cmd == "clear" {
+                if cmd.starts_with("cd ") {
+                    match env::set_current_dir(cmd[3..].trim()) {
+                        Ok(_) => {}
+                        Err(e) => self.output = format!("Error changing directory: {}", e),
+                    }
+                } else if cmd == "clear" {
                     self.output.clear();
                 } else if self.fullscreen_commands.contains(cmd.as_str()) {
                     self.run_fullscreen_cmd();
