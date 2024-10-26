@@ -10,12 +10,14 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
 
 use std::io::{Error, Stdout};
-use std::{collections::HashSet, io, process::Command, process::Stdio, result::Result};
+use std::path::PathBuf;
+use std::{collections::HashSet, env, io, process::Command, process::Stdio, result::Result};
 
 struct App {
     input: String,
@@ -30,6 +32,11 @@ impl App {
             output: String::new(),
             fullscreen_commands: ["htop", "vim", "less", "top"].iter().cloned().collect(),
         }
+    }
+
+    /// Returns the current directory
+    fn current_dir() -> PathBuf {
+        env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
     }
 
     /// In charge of running commands that do not involve a full screen
@@ -111,13 +118,17 @@ impl App {
                 // output area
                 let command_output = Paragraph::new(self.output.as_str())
                     .style(Style::default().fg(Color::White))
-                    .block(Block::default().borders(Borders::ALL));
+                    .block(Block::default().borders(Borders::ALL).title("Output"));
                 f.render_widget(command_output, chunks[0]);
 
                 // input area
-                let input = Paragraph::new(self.input.as_str())
-                    .style(Style::default().fg(Color::Yellow))
-                    .block(Block::default().borders(Borders::ALL));
+                let prompt = format!("{} > {}", App::current_dir().display(), self.input);
+                let input = Paragraph::new(Line::from(Span::styled(
+                    prompt,
+                    Style::default().fg(Color::Blue),
+                )))
+                .style(Style::default().fg(Color::Green))
+                .block(Block::default().borders(Borders::ALL).title("Input"));
                 f.render_widget(input, chunks[1]);
             })
             .unwrap();
