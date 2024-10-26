@@ -15,11 +15,12 @@ use ratatui::{
 };
 
 use std::io::{Error, Stdout};
-use std::{io, process::Command, result::Result};
+use std::{collections::HashSet, io, process::Command, process::Stdio, result::Result};
 
 struct App {
     input: String,
     output: String,
+    fullscreen_commands: HashSet<&'static str>,
 }
 
 impl App {
@@ -27,7 +28,46 @@ impl App {
         App {
             input: String::new(),
             output: String::new(),
+            fullscreen_commands: ["htop", "vim", "less", "top"].iter().cloned().collect(),
         }
+    }
+
+    /// In charge of running commands that do not involve a full screen
+    fn run_cmd(&mut self) {
+        let cmd = self.input.trim();
+        match Command::new("sh").arg("-c").arg(cmd).output() {
+            Ok(value) => {
+                if value.status.success() {
+                    self.output = String::from_utf8_lossy(&value.stdout).to_string();
+                } else {
+                    self.output = String::from_utf8_lossy(&value.stderr).to_string();
+                }
+            }
+            Err(_) => {
+                self.output = format!("Error: Command '{}' not found", cmd);
+            }
+        }
+    }
+
+    /// Runs fullscreen commands
+    fn run_fullscreen_cmd(&mut self) {
+        let cmd = self.input.trim();
+
+        disable_raw_mode().expect("Failed to disable raw mode");
+        execute!(io::stdout(), LeaveAlternateScreen).expect("Failed to leave alternate screen");
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .spawn()
+            .expect("Failed to spawn command");
+
+        let _ = child.wait();
+
+        enable_raw_mode().expect("Failed to enable raw mode");
+        execute!(io::stdout(), EnterAlternateScreen).expect("Failed to enter alternate screen");
     }
 
     /// Reads input commands and modifies the output accordingly
@@ -40,19 +80,13 @@ impl App {
                 self.input.pop();
             }
             KeyCode::Enter => {
-                let input_command = self.input.trim();
-                let result = Command::new("sh").arg("-c").arg(input_command).output();
-                match result {
-                    Ok(value) => {
-                        if value.status.success() {
-                            self.output = String::from_utf8_lossy(&value.stdout).to_string();
-                        } else {
-                            self.output = String::from_utf8_lossy(&value.stderr).to_string();
-                        }
-                    }
-                    Err(_) => {
-                        self.output = format!("Error: Command '{}' not found", input_command);
-                    }
+                let cmd = self.input.trim().to_string();
+                if cmd == "clear" {
+                    self.output.clear();
+                } else if self.fullscreen_commands.contains(cmd.as_str()) {
+                    self.run_fullscreen_cmd();
+                } else {
+                    self.run_cmd();
                 }
                 self.input.clear();
             }
